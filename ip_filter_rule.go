@@ -107,6 +107,11 @@ func (r *ipFilterRule) SetSourceIp(networkStr string) error {
 }
 
 func (r *ipFilterRule) SetSourcePorts(ports string) error {
+
+	if ports == "" {
+		return nil
+	}
+
 	match, err := regexp.MatchString("^[0-9]+(-[0-9]+)?(,[0-9]+)*$", ports)
 
 	if err != nil {
@@ -159,6 +164,11 @@ func (r *ipFilterRule) SetDestinationIp(networkStr string) error {
 }
 
 func (r *ipFilterRule) SetDestinationPorts(ports string) error {
+
+	if ports == "" {
+		return nil
+	}
+
 	match, err := regexp.MatchString("^[0-9]+(-[0-9]+)?(,[0-9]+)*$", ports)
 
 	if err != nil {
