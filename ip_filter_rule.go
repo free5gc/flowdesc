@@ -2,91 +2,119 @@ package flowdesc
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-type IPFilterRule interface {
-	// initial structure
-	//Init() error
-	// Set action of IPFilterRule
-	SetAction(bool) error
-	// Set Direction of IPFilterRule
-	SetDirection(bool) error
-	// Set Protocol of IPFilterRule
-	// 0xfc stand for ip (any)
-	SetProtocal(int) error
-	// Set Source IP of IPFilterRule
-	// format: IP or IP/mask or "any"
-	SetSourceIp(string) error
-	// Set Source port of IPFilterRule
-	// format: {port/port-port}[,ports[,...]]
-	SetSourcePorts(string) error
-	// Set Destination IP of IPFilterRule
-	// format: IP or IP/mask or "assigned"
-	SetDestinationIp(string) error
-	// Set Destination port of IPFilterRule
-	// format: {port/port-port}[,ports[,...]]
-	SetDestinationPorts(string) error
-	// Encode the IPFilterRule
-	Encode() (string, error)
-	// Decode the IPFilterRule
-	Decode() error
+const ProtocalNumberAny = 0xfc
+
+// Action - Action of IPFilterRule
+type Action string
+
+// Action const
+const (
+	Permit Action = "permit"
+	Deny   Action = "deny"
+)
+
+// Direction - direction of IPFilterRule
+type Direction string
+
+// Direction const
+const (
+	In  Direction = "in"
+	Out Direction = "out"
+)
+
+func flowDescErrorf(format string, a ...interface{}) error {
+	msg := fmt.Sprintf(format, a...)
+	return fmt.Errorf("flowdesc: %s", msg)
 }
 
-type ipFilterRule struct {
-	action   bool   // true: permit, false: deny
-	dir      bool   // false: in, true: out
-	proto    int    // protocal number
-	srcIp    string // <address/mask>
+// IPFilterRule define RFC 3588 that referd by TS 29.212
+type IPFilterRule struct {
+	action   Action
+	dir      Direction
+	proto    uint8  // protocal number
+	srcIP    string // <address/mask>
 	srcPorts string // [ports]
-	dstIp    string // <address/mask>
+	dstIP    string // <address/mask>
 	dstPorts string // [ports]
 }
 
-func NewIPFilterRule() *ipFilterRule {
-	r := &ipFilterRule{
-		action:   true,
-		dir:      true,
-		proto:    0xfc,
-		srcIp:    "",
+// NewIPFilterRule returns a new IPFilterRule instance
+func NewIPFilterRule() *IPFilterRule {
+	r := &IPFilterRule{
+		action:   Permit,
+		dir:      Out,
+		proto:    ProtocalNumberAny,
+		srcIP:    "",
 		srcPorts: "",
-		dstIp:    "",
+		dstIP:    "",
 		dstPorts: "",
 	}
 	return r
 }
 
-func (r *ipFilterRule) SetAction(action bool) error {
-	if !action {
-		return errors.New("Action cannot be deny")
+// SetAction sets action of the IPFilterRule
+func (r *IPFilterRule) SetAction(action Action) error {
+	switch action {
+	case Permit:
+		r.action = action
+	case Deny:
+		r.action = action
+	default:
+		return flowDescErrorf("'%s' is not allow, action only accept 'permit' or 'deny'", action)
 	}
-	r.action = action
 	return nil
 }
 
-func (r *ipFilterRule) SetDirection(dir bool) error {
-	if !dir {
-		return errors.New("Direction cannot be in")
+// GetAction returns action of the IPFilterRule
+func (r *IPFilterRule) GetAction() Action {
+	return r.action
+}
+
+// SetDirection sets direction of the IPFilterRule
+func (r *IPFilterRule) SetDirection(dir Direction) error {
+	switch dir {
+	case Out:
+		r.dir = dir
+	case In:
+		return flowDescErrorf("dir cannot be 'in' in core-network")
+	default:
+		return flowDescErrorf("'%s' is not allow, dir only accept 'out'", dir)
 	}
-	r.dir = dir
 	return nil
 }
 
-func (r *ipFilterRule) SetProtocal(proto int) error {
+// GetDirection returns direction of the IPFilterRule
+func (r *IPFilterRule) GetDirection() Direction {
+	return r.dir
+}
+
+// SetProtocal sets IP protocal number of the IPFilterRule
+// 0xfc stand for ip (any)
+func (r *IPFilterRule) SetProtocal(proto uint8) error {
 	r.proto = proto
 	return nil
 }
 
-func (r *ipFilterRule) SetSourceIp(networkStr string) error {
-	if networkStr == "any" {
-		r.srcIp = networkStr
+// GetProtocal returns the ip protocal number of the IPFilterRule
+func (r *IPFilterRule) GetProtocal() uint8 {
+	return r.proto
+}
+
+// SetSourceIP sets source IP of the IPFilterRule
+func (r *IPFilterRule) SetSourceIP(networkStr string) error {
+	if networkStr == "any" || networkStr == "assigned" {
+		r.srcIP = networkStr
 		return nil
 	}
 	if networkStr[0] == '!' {
-		return errors.New("Base on TS 29.212, ! expression shall not be used")
+		return flowDescErrorf("Base on TS 29.212, ! expression shall not be used")
 	}
 
 	var ipStr string
@@ -95,30 +123,32 @@ func (r *ipFilterRule) SetSourceIp(networkStr string) error {
 	if ip == nil {
 		_, ipNet, err := net.ParseCIDR(networkStr)
 		if err != nil {
-			return errors.New("Source IP format error")
+			return flowDescErrorf("Source IP format error")
 		}
 		ipStr = ipNet.String()
 	} else {
 		ipStr = ip.String()
 	}
 
-	r.srcIp = ipStr
+	r.srcIP = ipStr
 	return nil
 }
 
-func (r *ipFilterRule) SetSourcePorts(ports string) error {
+// GetSourceIP returns src of the IPFilterRule
+func (r *IPFilterRule) GetSourceIP() string {
+	return r.srcIP
+}
+
+// SetSourcePorts sets source ports of the IPFilterRule
+func (r *IPFilterRule) SetSourcePorts(ports string) error {
 
 	if ports == "" {
+		r.srcPorts = ""
 		return nil
 	}
 
-	match, err := regexp.MatchString("^[0-9]+(-[0-9]+)?(,[0-9]+)*$", ports)
-
-	if err != nil {
-		return errors.New("Regex match error")
-	}
-	if !match {
-		return errors.New("Ports format error")
+	if match, err := regexp.MatchString("^[0-9]+(-[0-9]+)?(,[0-9]+)*$", ports); err != nil || !match {
+		return flowDescErrorf("not valid format of port number")
 	}
 
 	// Check port range
@@ -137,13 +167,19 @@ func (r *ipFilterRule) SetSourcePorts(ports string) error {
 	return nil
 }
 
-func (r *ipFilterRule) SetDestinationIp(networkStr string) error {
-	if networkStr == "assigned" {
-		r.dstIp = networkStr
+// GetSourcePorts returns src ports of the IPFilterRule
+func (r *IPFilterRule) GetSourcePorts() string {
+	return r.srcPorts
+}
+
+// SetDestinationIP sets destination IP of the IPFilterRule
+func (r *IPFilterRule) SetDestinationIP(networkStr string) error {
+	if networkStr == "any" || networkStr == "assigned" {
+		r.dstIP = networkStr
 		return nil
 	}
 	if networkStr[0] == '!' {
-		return errors.New("Base on TS 29.212, ! expression shall not be used")
+		return flowDescErrorf("Base on TS 29.212, ! expression shall not be used")
 	}
 
 	var ipDst string
@@ -152,30 +188,37 @@ func (r *ipFilterRule) SetDestinationIp(networkStr string) error {
 	if ip == nil {
 		_, ipNet, err := net.ParseCIDR(networkStr)
 		if err != nil {
-			return errors.New("Source IP format error")
+			return flowDescErrorf("Source IP format error")
 		}
 		ipDst = ipNet.String()
 	} else {
 		ipDst = ip.String()
 	}
 
-	r.dstIp = ipDst
+	r.dstIP = ipDst
 	return nil
 }
 
-func (r *ipFilterRule) SetDestinationPorts(ports string) error {
+// GetDestinationIP returns dst of the IPFilterRule
+func (r *IPFilterRule) GetDestinationIP() string {
+	return r.dstIP
+}
+
+// SetDestinationPorts sets destination ports of the IPFilterRule
+func (r *IPFilterRule) SetDestinationPorts(ports string) error {
 
 	if ports == "" {
+		r.dstPorts = ports
 		return nil
 	}
 
 	match, err := regexp.MatchString("^[0-9]+(-[0-9]+)?(,[0-9]+)*$", ports)
 
 	if err != nil {
-		return errors.New("Regex match error")
+		return flowDescErrorf("Regex match error")
 	}
 	if !match {
-		return errors.New("Ports format error")
+		return flowDescErrorf("Ports format error")
 	}
 
 	// Check port range
@@ -186,7 +229,7 @@ func (r *ipFilterRule) SetDestinationPorts(ports string) error {
 			return err
 		}
 		if 0 > int(port) || port > 65535 {
-			return errors.New("Invalid port number")
+			return flowDescErrorf("Invalid port number")
 		}
 	}
 
@@ -194,36 +237,51 @@ func (r *ipFilterRule) SetDestinationPorts(ports string) error {
 	return nil
 }
 
-func (r *ipFilterRule) Encode() (string, error) {
+// GetDestinationPorts returns src ports of the IPFilterRule
+func (r *IPFilterRule) GetDestinationPorts() string {
+	return r.dstPorts
+}
+
+// SwapSourceAndDestination swap the src and dst of the IPFilterRule
+func (r *IPFilterRule) SwapSourceAndDestination() {
+	r.srcIP, r.dstIP = r.dstIP, r.srcIP
+	r.srcPorts, r.dstPorts = r.dstPorts, r.srcPorts
+}
+
+// Encode function out put the IPFilterRule from the struct
+func Encode(r *IPFilterRule) (string, error) {
 	var ipFilterRuleStr []string
 
+	// pre-allocate seven element
+	ipFilterRuleStr = make([]string, 0, 9)
+
 	// action
-	if r.action {
+	switch r.action {
+	case Permit:
 		ipFilterRuleStr = append(ipFilterRuleStr, "permit")
-	} else {
+	case Deny:
 		ipFilterRuleStr = append(ipFilterRuleStr, "deny")
 	}
 
 	// dir
-	if r.dir {
+	switch r.dir {
+	case Out:
 		ipFilterRuleStr = append(ipFilterRuleStr, "out")
-	} else {
-		ipFilterRuleStr = append(ipFilterRuleStr, "in")
 	}
 
 	// proto
-	if r.proto == 0xfc {
+	if r.proto == ProtocalNumberAny {
 		ipFilterRuleStr = append(ipFilterRuleStr, "ip")
 	} else {
-		ipFilterRuleStr = append(ipFilterRuleStr, strconv.Itoa(r.proto))
+		ipFilterRuleStr = append(ipFilterRuleStr, strconv.Itoa(int(r.proto)))
 	}
 
 	// from
 	ipFilterRuleStr = append(ipFilterRuleStr, "from")
 
 	// src
-	if r.srcIp != "" {
-		ipFilterRuleStr = append(ipFilterRuleStr, r.srcIp)
+	if r.srcIP != "" {
+		ipFilterRuleStr = append(ipFilterRuleStr, r.srcIP)
 	} else {
 		return "", errors.New("Encode error: no source IP")
 	}
@@ -235,8 +293,8 @@ func (r *ipFilterRule) Encode() (string, error) {
 	ipFilterRuleStr = append(ipFilterRuleStr, "to")
 
 	// dst
-	if r.dstIp != "" {
-		ipFilterRuleStr = append(ipFilterRuleStr, r.dstIp)
+	if r.dstIP != "" {
+		ipFilterRuleStr = append(ipFilterRuleStr, r.dstIP)
 	} else {
 		return "", errors.New("Encode error: no destination IP")
 	}
@@ -244,11 +302,84 @@ func (r *ipFilterRule) Encode() (string, error) {
 		ipFilterRuleStr = append(ipFilterRuleStr, r.dstPorts)
 	}
 
-	// [options]
+	// accroding TS 29.212 IPFilterRule cannot use [options]
 
 	return strings.Join(ipFilterRuleStr, " "), nil
 }
 
-func (r *ipFilterRule) Decode() error {
+// Decode parsing the string to IPFilterRule
+func Decode(s string, r *IPFilterRule) error {
+	parts := strings.Split(s, " ")
+
+	var ptr int
+
+	// action
+	if err := r.SetAction(Action(parts[ptr])); err != nil {
+		return err
+	}
+	ptr++
+
+	// dir
+	if err := r.SetDirection(Direction(parts[ptr])); err != nil {
+		return err
+	}
+	ptr++
+
+	// proto
+	var protoNumber uint8
+	if parts[ptr] == "ip" {
+		r.proto = ProtocalNumberAny
+	} else {
+		if proto, err := strconv.Atoi(parts[ptr]); err != nil {
+			return flowDescErrorf("parse proto failed: %s", err)
+		} else {
+			protoNumber = uint8(proto)
+		}
+		if err := r.SetProtocal(protoNumber); err != nil {
+			return flowDescErrorf("parse proto failed: %s", err)
+		}
+	}
+	ptr++
+
+	// from
+	if from := parts[ptr]; from != "from" {
+		return flowDescErrorf("parse faild: must have 'from'")
+	}
+	ptr++
+
+	// src
+	if err := r.SetSourceIP(parts[ptr]); err != nil {
+		return err
+	}
+	ptr++
+
+	if err := r.SetSourcePorts(parts[ptr]); err != nil {
+	} else {
+		ptr++
+	}
+
+	// to
+	if to := parts[ptr]; to != "to" {
+		return flowDescErrorf("parse faild: must have 'to'")
+	}
+	ptr++
+
+	// dst
+	if err := r.SetDestinationIP(parts[ptr]); err != nil {
+		return err
+	}
+	ptr++
+
+	// if end of parts
+	if !(len(parts) > ptr) {
+		return nil
+	}
+
+	if err := r.SetDestinationPorts(parts[ptr]); err != nil {
+		return err
+	} //else {
+	//ptr++
+	//}
+
 	return nil
 }
